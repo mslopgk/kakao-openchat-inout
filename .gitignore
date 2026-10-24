@@ -1,0 +1,30 @@
+# 로그인 세션 / DB / 감지기 상태 — 절대 커밋 금지
+*.db
+*.db-*
+events.jsonl
+state.json
+
+# 추출 바이너리 (AVD에서 뽑은 ARM 번역 계층 — 용량 큼)
+linux-redroid/ndk/
+**/libndk_translation*
+**/system/
+
+# 커널 이미지 / 빌드 산출물
+*.bzImage
+bzImage*
+*.log
+
+# 앱 패키지
+*.apk
+*.xapk
+*.zip
+
+# 스크린샷/캡처
+*.png
+*.jpg
+
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+venv/
