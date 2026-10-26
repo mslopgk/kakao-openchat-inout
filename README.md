@@ -37,13 +37,30 @@ python -m pip install pycryptodome
 ADB_SERIAL=emulator-5554 python -u detector/inout_detector.py
 ```
 
+## 관리자 대시보드 (`admin.py`)
+
+**상시 감지 + 웹 대시보드를 한 프로세스로** 돌린다. 감지기를 백그라운드 스레드로 상시 실행하면서
+실시간 이벤트 로그와 **userId별 들낙 블랙리스트**(프로필 바꿔도 묶임)를 보여준다.
+
+```bash
+pip install flask pycryptodome
+python admin.py                     # Redroid(WSL) 자동 감지, http://localhost:8787
+PORT=9000 python admin.py
+ADB_SERIAL=emulator-5554 READ_MODE=shell python admin.py   # 방식 A(에뮬레이터)
+```
+
+- `ADB_SERIAL` 미지정 시 WSL IP(`<ip>:5600`)를 자동 해석하고 pull 모드로 뜬다 (방식 B).
+- 대시보드: 현황(들낙 유저 수 등) · 블랙리스트(userId별 닉/입퇴장/들낙 횟수, 화이트리스트 토글) · 실시간 로그(방 필터, 들낙만 보기).
+- `notes.json` 에 화이트리스트/메모 저장(로컬, 커밋 안 함).
+
 ## 구성
 
 ```
+admin.py           상시 감지 + 관리자 대시보드 (Flask)
 detector/          감지기 (공통). inout_detector.py + ref/kakaodecrypt.py
 windows-emulator/  방식 A: AVD 설치/운영, ui.sh, overnight_logger.sh
 linux-redroid/     방식 B: 커널빌드/이미지/기동 스크립트
-docs/              작업·대화 히스토리 (HISTORY.md)
+docs/              작업·대화 히스토리(HISTORY.md), 필요사양(REQUIREMENTS.md)
 ```
 
 ## 주의 / 한계
