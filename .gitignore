@@ -28,3 +28,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# 로컬 전용(커밋 안 함)
+.wsl_ip

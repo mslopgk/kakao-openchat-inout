@@ -47,7 +47,13 @@
   - 에뮬레이터가 호스트 5555 점유 → Redroid를 **5600:5555** 로. `adb localhost:5600` offline →
     **WSL IP 직결**(예 `192.168.105.52:5600`).
   - `vmIdleTimeout=-1` + `--restart unless-stopped` + systemd docker → **WSL 재부팅 자동복구** 확인.
-- AVD에서 `libndk_translation` 추출 → `redroid-kakao:14` 이미지 오버레이. 카톡 설치·**QR 로그인 화면 도달**.
+- AVD에서 `libndk_translation` 추출 → `redroid-kakao:14` 이미지 오버레이. 카톡 설치·실행.
+- 추가 발견(실검증 중):
+  - Redroid adbd 는 기본 `shell` → **`adb root` 가능**(에뮬레이터처럼) → `/data/data` 읽힘.
+  - Redroid 내장 `sqlite3` 가 DB 질의 시 **core dump** → 감지기에 **`READ_MODE=pull`** 추가
+    (DB를 `adb pull` 로 호스트에 꺼내 로컬 sqlite3 로 읽음. `exec-out cat` 은 Windows 에서 바이너리 깨짐).
+- **2026-10-27 전체 실검증:** 부계정 QR 로그인(인증번호 단계는 생략되기도) → 방 동기화 →
+  피드 9건 복호화 → 들낙 판정까지 방식 A와 동일 동작. 프로필 4종이 전부 같은 userId 로 묶임 재확인.
 
 ## 6. 정리
 
@@ -60,7 +66,7 @@
 |---|---|
 | 들낙 감지 로직 (복호화·판정) | ✅ 완료·실검증 (입장/퇴장/재입장, 프로필 4종) |
 | 방식 A (Windows+AVD) | ✅ 전체 동작 |
-| 방식 B (WSL+Redroid) | 🟡 구성·부팅·자동재시작 ✅ / 카톡 로그인은 사람이 QR 1회 |
+| 방식 B (WSL+Redroid) | ✅ 전체 실검증 (adb root + pull 모드). 로그인만 사람이 QR 1회 |
 | userId 성질 | ✅ 같은 방 불변, 방 간 상이 |
 
 ## 알려진 함정 / 다음 할 것

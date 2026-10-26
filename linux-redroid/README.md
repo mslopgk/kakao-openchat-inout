@@ -3,8 +3,9 @@
 PC 한 대에서 **헤드리스**로 돌리는 방식. 에뮬레이터 GUI 없이 도커 컨테이너로 안드로이드를 띄우고,
 `adb` 로만 붙는다. 상시 가동·자동 재시작에 유리.
 
-> 상태: 커널/이미지/부팅·자동재시작까지 검증. 카톡 설치·QR 로그인 화면 도달까지 확인.
-> (로그인은 사람이 부계정 폰으로 QR 1회 스캔해야 함 — 자동화 불가)
+> **상태: 전체 실검증 완료 (2026-10-27).** 부계정 QR 로그인 → 방 동기화 → 피드 9건 복호화 →
+> 들낙 판정까지 방식 A와 동일하게 동작 확인. (프로필 4종이 전부 같은 userId로 묶임도 재확인)
+> 로그인만 사람이 부계정 폰으로 QR 1회 스캔(+경우에 따라 인증번호 입력) — 자동화 불가.
 
 ## 왜 이렇게 복잡한가
 
@@ -68,15 +69,30 @@ docker run -d --name redroid-kakao --privileged --restart unless-stopped \
 # Windows adb 에서 WSL IP 로 붙는다. localhost:5600 은 offline 으로 뜸.
 WSL_IP=$(wsl -d Ubuntu -u root -- hostname -I | awk '{print $1}')   # 예: 192.168.105.52
 adb connect $WSL_IP:5600
+adb -s $WSL_IP:5600 root          # Redroid adbd 는 기본 shell(uid 2000) → root 로 승격해야 /data 읽음
 adb -s $WSL_IP:5600 install-multiple -r -g com.kakao.talk.apk config.arm64_v8a.apk config.en.apk config.mdpi.apk
 ```
-로그인은 방식 A 와 동일: **보조 기기 → QR** (부계정 폰으로 스캔, 1분 유효).
 
-## 6) 감지기 실행
+> **adb root 필수.** 에뮬레이터와 달리 Redroid 는 `adb root` 를 지원한다("restarting adbd as root").
+> 안 하면 adbd 가 `shell` 권한이라 `/data/data/com.kakao.talk` 를 못 읽는다.
+
+로그인: 카톡 첫 화면에서 **Set as Secondary Device → Confirm → QR Code Log In**.
+부계정 폰 카톡 > 더보기 > 우상단 스캔으로 QR 촬영(**55초 유효**). 이후 **인증번호(Registration Code, ~40초)** 가
+뜨면 폰 주기기에 입력(생략되고 바로 넘어가는 경우도 있음) → 권한 안내 OK → 메인 진입 → 방 자동 동기화.
+
+> 원격 진행 팁: `adb exec-out screencap` 는 Windows 에서 바이너리가 깨지니 `screencap -p /sdcard/x.png`
+> 후 `adb pull` 로 가져온다. 인증번호는 `uiautomator dump` 로 텍스트 추출하면 OCR 없이 정확.
+
+## 6) 감지기 실행 — **`READ_MODE=pull` 필수**
 
 ```bash
-ADB_SERIAL=$WSL_IP:5600 python -u ../detector/inout_detector.py
+ADB_SERIAL=$WSL_IP:5600 READ_MODE=pull python -u ../detector/inout_detector.py
 ```
+
+> **왜 pull 모드인가:** Redroid 내장 `sqlite3` 는 KakaoTalk.db 질의 시 **core dump(Aborted)** 로 죽는다.
+> 그래서 감지기는 `adb shell sqlite3`(방식 A) 대신 **DB(+wal/shm)를 `adb pull` 로 호스트에 꺼내
+> 로컬 sqlite3 로 읽는다**(`READ_MODE=pull`). `adb exec-out cat` 은 Windows 에서 바이너리가
+> CRLF 로 깨지므로 반드시 `adb pull` 을 쓴다.
 
 ## 삽질 로그 (요약)
 
@@ -88,6 +104,9 @@ ADB_SERIAL=$WSL_IP:5600 python -u ../detector/inout_detector.py
 | 포트포워딩 안 됨 | `xt_nat` 등 누락 | 모듈 목록 보강 |
 | `adb localhost:5600` offline | WSL NAT | WSL IP 직결 |
 | 셸 변수 `$...` 가 날아감 | `wsl.exe` 가 먼저 해석 | `.sh` 로 저장 후 `wsl ... bash x.sh` |
+| `/data/data` 못 읽음 | Redroid adbd 가 shell(uid 2000) | `adb root` 로 승격 |
+| 내장 `sqlite3` core dump | Redroid sqlite3 가 DB 질의 시 Abort | DB pull 후 호스트 sqlite3 (`READ_MODE=pull`) |
+| `adb pull` 경로가 Windows 경로로 변환 | Git Bash 경로 변환 | `MSYS_NO_PATHCONV=1` + 로컬은 `D:/...` |
 
 ## 장단점
 

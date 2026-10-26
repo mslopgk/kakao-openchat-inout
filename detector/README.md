@@ -1,7 +1,18 @@
 # 감지기 (`inout_detector.py`)
 
 카톡 로컬 DB에서 오픈채팅 입장/퇴장 피드를 복호화해 **userId 기준으로 들낙을 판정**한다.
-에뮬레이터/Redroid 공통 — 둘 다 `adb` 로 접근하므로 `ADB` 경로와 (Redroid면) `adb connect localhost:5555` 만 맞추면 된다.
+에뮬레이터/Redroid 공통 — 둘 다 `adb` 로 접근한다.
+
+## 환경변수
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `ADB` | `D:\Android\Sdk\platform-tools\adb.exe` | adb 실행 경로 |
+| `ADB_SERIAL` | (없음) | 대상 지정 (예: `emulator-5554`, `192.168.105.52:5600`) |
+| `READ_MODE` | `shell` | `shell`=`adb shell sqlite3`(방식 A) / `pull`=DB를 호스트로 꺼내 로컬 sqlite3(방식 B) |
+
+> **방식 B(Redroid)는 `READ_MODE=pull` 필수.** Redroid 내장 `sqlite3` 가 core dump 로 죽으므로
+> DB(+wal/shm)를 `adb pull` 로 꺼내 파이썬 `sqlite3` 로 읽는다. (`adb root` 선행 필요)
 
 ## DB 구조 (KakaoTalk 26.9.1 기준, 실측)
 

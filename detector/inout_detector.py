@@ -5,8 +5,10 @@ userId 기준으로 들낙(짧은 시간 내 입장->퇴장, 반복 입장)을 �
 """
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -16,8 +18,13 @@ sys.path.insert(0, str(Path(__file__).parent / "ref"))
 from kakaodecrypt import KakaoDecrypt  # noqa: E402
 
 ADB = os.environ.get("ADB", r"D:\Android\Sdk\platform-tools\adb.exe")
-# 여러 기기가 붙어 있을 때 대상 지정 (예: emulator-5554, localhost:5555)
+# 여러 기기가 붙어 있을 때 대상 지정 (예: emulator-5554, 192.168.105.52:5600)
 ADB_SERIAL = os.environ.get("ADB_SERIAL")
+# DB 읽기 방식:
+#   shell(기본) = `adb shell sqlite3` (에뮬레이터: 내장 sqlite3 사용)
+#   pull        = DB를 호스트로 꺼내 로컬 sqlite3로 질의 (Redroid: 내장 sqlite3가 죽음)
+READ_MODE = os.environ.get("READ_MODE", "shell")
+PULLDIR = Path(tempfile.gettempdir()) / "kakao_db_pull"
 DB = "/data/data/com.kakao.talk/databases/KakaoTalk.db"
 DB2 = "/data/data/com.kakao.talk/databases/KakaoTalk2.db"
 HERE = Path(__file__).parent
@@ -34,12 +41,35 @@ FEED_TYPES = {1: "초대", 2: "퇴장", 4: "입장", 6: "강퇴"}
 sys.stdout.reconfigure(encoding="utf-8")
 
 
+def _adb(*args, binary=False):
+    return subprocess.run(
+        [ADB, *(["-s", ADB_SERIAL] if ADB_SERIAL else []), *args],
+        capture_output=True, timeout=60,
+        **({} if binary else dict(text=True, encoding="utf-8")),
+    )
+
+
+def _pull(db):
+    """DB(+wal/shm)를 호스트로 꺼내 로컬 경로를 돌려준다 (Redroid용).
+
+    Windows adb의 `exec-out cat`은 바이너리를 CRLF로 깨뜨리므로 `adb pull`을 쓴다.
+    """
+    PULLDIR.mkdir(parents=True, exist_ok=True)
+    name = Path(db).name
+    for suf in ("", "-wal", "-shm"):
+        _adb("pull", db + suf, str(PULLDIR / (name + suf)), binary=True)
+    return str(PULLDIR / name)
+
+
 def sql(db, query):
-    out = subprocess.run(
-        [ADB, *(["-s", ADB_SERIAL] if ADB_SERIAL else []), "shell",
-         f"sqlite3 -json {db} \"{query}\""],
-        capture_output=True, text=True, encoding="utf-8", timeout=30,
-    ).stdout.strip()
+    if READ_MODE == "pull":
+        con = sqlite3.connect(_pull(db))
+        con.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in con.execute(query)]
+        finally:
+            con.close()
+    out = _adb("shell", f"sqlite3 -json {db} \"{query}\"").stdout.strip()
     return json.loads(out) if out else []
 
 

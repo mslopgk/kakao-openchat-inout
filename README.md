@@ -21,7 +21,7 @@
 | 폴더 | [`windows-emulator/`](windows-emulator/) | [`linux-redroid/`](linux-redroid/) |
 | 형태 | 안드로이드 에뮬레이터(GUI) | 도커 컨테이너(헤드리스) |
 | root | `adb root` (google_apis 이미지) | `--privileged` |
-| 상태 | **전체 실검증 완료** | 구성·부팅·자동재시작 검증, 로그인 화면 도달 |
+| 상태 | **전체 실검증 완료** | **전체 실검증 완료** (adb root + `READ_MODE=pull`) |
 | 적합 | 바로 쓰기 | 상시 가동/자동복구 |
 
 둘 다 **같은 감지기**([`detector/`](detector/))를 쓴다 — `adb` 로 DB를 읽으므로 `ADB_SERIAL`만 맞추면 공통.
