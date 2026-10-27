@@ -14,17 +14,21 @@
 - 단, **방이 다르면 userId 가 다르다** (오픈채팅 userId는 방=링크별 발급) → 방 간 블랙리스트 공유는 불가.
 - 퇴장 피드는 입장과 포맷이 달라 (`members` 배열 vs `member` 단수) 처음엔 퇴장을 전부 놓쳤었다.
 
-## 두 가지 구동 방식
+## 세 가지 구동 방식
 
-| | 방식 A: Windows + AVD | 방식 B: WSL2 + Redroid |
-|---|---|---|
-| 폴더 | [`windows-emulator/`](windows-emulator/) | [`linux-redroid/`](linux-redroid/) |
-| 형태 | 안드로이드 에뮬레이터(GUI) | 도커 컨테이너(헤드리스) |
-| root | `adb root` (google_apis 이미지) | `--privileged` |
-| 상태 | **전체 실검증 완료** | **전체 실검증 완료** (adb root + `READ_MODE=pull`) |
-| 적합 | 바로 쓰기 | 상시 가동/자동복구 |
+| | 방식 A: Windows + AVD | 방식 B: WSL2 + Redroid | ⭐ 방식 C: PC 카톡 |
+|---|---|---|---|
+| 폴더 | [`windows-emulator/`](windows-emulator/) | [`linux-redroid/`](linux-redroid/) | [`pc/`](pc/) |
+| 형태 | 안드로이드 에뮬레이터 | 도커 컨테이너(헤드리스) | **PC 카톡 네이티브** |
+| 안드로이드 | 필요 | 필요 | **불필요** |
+| 복호화 | 메시지 AES(kakaodecrypt) | 동일 | **SQLCipher4(메모리 키)** |
+| 상태 | 전체 실검증 | 전체 실검증 | **전체 실검증 + .exe 앱** |
+| 적합 | 바로 쓰기 | 상시 가동 | **클라이언트 배포(가장 가벼움)** |
 
-둘 다 **같은 감지기**([`detector/`](detector/))를 쓴다 — `adb` 로 DB를 읽으므로 `ADB_SERIAL`만 맞추면 공통.
+- A·B 는 **같은 감지기**([`detector/`](detector/))를 쓴다(`adb` 로 DB 읽기, `ADB_SERIAL`만 다름).
+- **방식 C 가 최종 권장** — 에뮬·WSL·adb 없이 PC 카톡만 켜고 `.exe` 더블클릭. `authorId`(userId)로
+  프로필 바꿔치기까지 추적. 자세한 건 [`pc/README.md`](pc/README.md).
+- 공통 한계: 어느 방식이든 카톡 클라이언트가 **상시 온라인**이어야 피드를 받는다(메신저 방식의 본질).
 
 ## 빠른 시작 (방식 A)
 

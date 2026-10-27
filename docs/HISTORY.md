@@ -60,13 +60,30 @@
 - pnug·was(multisite) 등 **불필요한 도커 컨테이너 제거** (볼륨/프로젝트 폴더는 보존).
 - 두 방식 + 감지기 + 이 히스토리를 **private git** 으로 정리(이 저장소).
 
+## 7. 방식 C — PC 카톡 (안드로이드 제거) + Windows 앱 (2026-10-28)
+
+"PC카톡으로 하면 안드로이드 의존성이 없어지잖아" → 조사·구현.
+
+- PC 카톡(26.9.0)은 방별 `chatLogs_*.edb` = **SQLCipher4**(파일 전체 암호화, DB별 raw 32B 키).
+  최신 방식은 **키가 KakaoTalk.exe 메모리에 상주**. 공개 툴 코드를 읽어 방식 확인 후
+  자동승인이 외부코드 실행을 막아 → **자체 스크립트로 재구현**(읽기전용 메모리, 오픈챗만).
+- 삽질: 도구는 32비트 포인터 가정인데 **KakaoTalk.exe는 64비트** → codec 주변 8바이트 포인터를
+  역참조해 실제 edb로 검증하는 **오라클 방식**으로 해결. 키 30개 복구, `.edb`→평문 SQLite.
+- `chatLogs(logId, **authorId**, type, message)`, **type=0 피드 message는 평문 JSON**
+  (feedType 4=입장/2=퇴장, userId 포함) → kakaodecrypt 불필요. 오픈챗 목록은
+  `chatListInfo(type=OM/OD)` + `openLinkListInfo(linkName)`.
+- 엔드투엔드 실동작: 오픈챗 17방 자동 목록화, 관측 660명 중 **들낙 120명** 판정(닉 바꿔치기 묶임).
+- **Windows 앱화**: `pc_detector.py`+`app.py`(감지+Flask+pywebview) → PyInstaller 단일
+  `KakaoInoutDetector.exe`(~21MB). 클라이언트는 PC카톡 켜고 더블클릭만.
+
 ## 최종 상태
 
 | 항목 | 상태 |
 |---|---|
-| 들낙 감지 로직 (복호화·판정) | ✅ 완료·실검증 (입장/퇴장/재입장, 프로필 4종) |
+| 들낙 감지 로직 (복호화·판정) | ✅ 완료·실검증 (입장/퇴장/재입장, 프로필 다종) |
 | 방식 A (Windows+AVD) | ✅ 전체 동작 |
-| 방식 B (WSL+Redroid) | ✅ 전체 실검증 (adb root + pull 모드). 로그인만 사람이 QR 1회 |
+| 방식 B (WSL+Redroid) | ✅ 전체 실검증 (adb root + pull 모드) |
+| ⭐ 방식 C (PC 카톡 + .exe 앱) | ✅ 전체 실동작 (안드로이드 無, 단일 exe) |
 | userId 성질 | ✅ 같은 방 불변, 방 간 상이 |
 
 ## 알려진 함정 / 다음 할 것

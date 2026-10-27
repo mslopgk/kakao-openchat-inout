@@ -32,3 +32,11 @@ venv/
 # 로컬 전용(커밋 안 함)
 .wsl_ip
 notes.json
+
+# PC카톡 앱 빌드/런타임
+pc/build/
+pc/dist/
+pc/__pycache__/
+pc/pc_state.json
+pc/events.jsonl
+*.exe
