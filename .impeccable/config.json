@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          "pc/dashboard.html"
+        ],
+        "createdAt": "2026-10-27T15:50:20.467Z",
+        "reason": "user confirmed: approved the surveillance-terminal aesthetic ('예쁘게'); red/green glow is purposeful alert signaling on 들낙 badges + live dot, not decorative"
+      }
+    ]
+  }
+}

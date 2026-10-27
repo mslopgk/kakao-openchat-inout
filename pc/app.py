@@ -30,7 +30,8 @@ EVENTS = DATA_DIR / "events.jsonl"
 NOTES = DATA_DIR / "notes.json"
 PAGE = (RES / "dashboard.html").read_text(encoding="utf-8")
 
-STATUS = {"last_poll": None, "error": "시작 중…", "keys": 0, "rooms": {},
+STATUS = {"last_poll": None, "error": None, "keys": 0, "rooms": {}, "watch": [],
+          "hint": "시작 중… (PC 카톡이 켜져 있어야 합니다)",
           "account": None, "backend": "PC KakaoTalk (SQLCipher)"}
 
 
@@ -51,7 +52,16 @@ def detector_loop():
                     STATUS["error"] = repr(e)
                 time.sleep(D.POLL_SEC)
         except Exception as e:
-            STATUS["error"] = repr(e)      # 카톡 미실행 등
+            msg = str(e)
+            if "미실행" in msg or "KakaoTalk.exe" in msg:
+                STATUS["hint"] = "PC 카톡이 실행돼 있지 않습니다. 카톡을 켜고 로그인하세요."
+            elif "user dir" in msg:
+                STATUS["hint"] = "PC 카톡에 로그인된 계정이 없습니다. 카톡에 로그인하세요."
+            else:
+                STATUS["hint"] = f"대기 중: {msg[:60]}"
+            STATUS["error"] = None
+            STATUS["keys"] = 0
+            STATUS["rooms"] = {}
             time.sleep(5)
 
 
@@ -129,9 +139,26 @@ def api_status():
     return jsonify({
         "serial": STATUS["account"] or "-", "read_mode": STATUS["backend"],
         "device": f"keys={STATUS['keys']}", "rooms": STATUS["rooms"],
+        "watch": STATUS.get("watch", []), "hint": STATUS.get("hint"),
         "error": STATUS["error"], "last_poll": lp,
         "age_sec": (round(time.time() - lp, 1) if lp else None),
     })
+
+
+@app.get("/api/watch")
+def api_watch_get():
+    return jsonify(sorted(D.load_watch()))
+
+
+@app.post("/api/watch")
+def api_watch_set():
+    d = request.get_json(force=True)
+    ids = d.get("watch", [])
+    if not isinstance(ids, list):
+        return jsonify({"ok": False}), 400
+    D.save_watch(ids)
+    STATUS["watch"] = sorted(str(x) for x in ids)
+    return jsonify({"ok": True, "watch": STATUS["watch"]})
 
 
 @app.get("/api/events")

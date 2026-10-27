@@ -128,6 +128,19 @@ tr.wl{opacity:.4}
 .empty{padding:28px 18px;text-align:center;color:var(--mut);font-family:var(--mono);font-size:12px;letter-spacing:1px}
 .foot{font-family:var(--mono);font-size:10.5px;color:var(--mut);letter-spacing:.5px;
   text-align:center;padding:4px 0 10px}
+.hintbar{margin:0;padding:11px 22px;font-family:var(--mono);font-size:12.5px;letter-spacing:.3px;
+  display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+.hintbar.warn{background:var(--amber-dim);color:var(--amber)}
+.hintbar.err{background:var(--red-dim);color:var(--red)}
+.hintbar b{font-weight:800}
+.watchbar{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;align-items:center}
+.wchip{font-family:var(--sans);font-size:12.5px;padding:5px 11px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--line2);background:var(--panel);color:var(--mut2);user-select:none;transition:.12s}
+.wchip:hover{border-color:var(--cyan)}
+.wchip.on{background:var(--grn-dim);border-color:rgba(63,240,138,.4);color:var(--grn)}
+.wchip .cb{margin-right:6px;font-weight:800}
+.wall{font-family:var(--mono);font-size:11px;color:var(--mut);margin-left:auto}
+.wall button{font-size:11px;padding:4px 10px}
 @media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}.brand .sub{display:none}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important}}
 </style></head><body>
@@ -150,9 +163,16 @@ tr.wl{opacity:.4}
   </div>
   <div class="scan"></div>
 </header>
+<div id="hint" class="hintbar" style="display:none"></div>
 
 <div class="wrap">
   <div class="stats reveal" id="stat"></div>
+
+  <div class="card reveal" id="watchcard">
+    <h2><span class="tick">▚</span>감시 방 설정
+      <span class="opt" id="watchsum"></span></h2>
+    <div class="watchbar" id="watchlist"></div>
+  </div>
 
   <div class="card reveal">
     <h2><span class="tick">▚</span>들낙 블랙리스트
@@ -196,6 +216,44 @@ async function tickStatus(){
     sel.value=cur; sel.dataset.n=Object.keys(rooms).length;
   }
   $('#foot').textContent=`${s.serial||'-'}  ·  ${s.read_mode}  ·  poll ${s.age_sec!=null?s.age_sec+'s':'-'}  ·  ${new Date().toLocaleTimeString('ko-KR')}`;
+  // 힌트 배너 (로그인/방 안내)
+  const hb=$('#hint');
+  if(s.hint){const login=/로그인|실행|켜/.test(s.hint);
+    hb.className='hintbar '+(login?'err':'warn');
+    hb.innerHTML=(login?'⚠ ':'ℹ ')+'<b>'+esc(s.hint)+'</b>';hb.style.display='flex';}
+  else{hb.style.display='none';}
+  buildWatch(rooms, s.watch||[]);
+}
+
+let _watchSig='';
+function buildWatch(rooms, watch){
+  const ids=Object.keys(rooms);
+  const sig=ids.join(',')+'|'+watch.join(',');
+  if(sig===_watchSig) return; _watchSig=sig;
+  const all=watch.length===0;
+  $('#watchsum').textContent = all?`전체 ${ids.length}개 방 감시 중`:`${watch.length} / ${ids.length}개 방 감시`;
+  const wl=$('#watchlist'); wl.innerHTML='';
+  if(!ids.length){wl.innerHTML='<span class="mut" style="font-family:var(--mono);font-size:12px">오픈챗 없음</span>';return;}
+  for(const id of ids){
+    const on = all || watch.includes(id);
+    const c=el('div','wchip'+(on?' on':''));
+    c.innerHTML=`<span class="cb">${on?'☑':'☐'}</span>${esc(rooms[id])}`;
+    c.onclick=async()=>{
+      let cur = watch.length? new Set(watch) : new Set(ids);  // 빈 watch=전체
+      if(cur.has(id)) cur.delete(id); else cur.add(id);
+      let next = (cur.size===ids.length)? [] : [...cur];      // 전부면 []로(=전체)
+      await j('/api/watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({watch:next})});
+      _watchSig=''; loop();
+    };
+    wl.appendChild(c);
+  }
+  const bar=el('div','wall');
+  bar.innerHTML='<button id="wall-on">전체 감시</button>';
+  wl.appendChild(bar);
+  bar.querySelector('#wall-on').onclick=async()=>{
+    await j('/api/watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({watch:[]})});
+    _watchSig=''; loop();
+  };
 }
 
 async function tickData(){

@@ -34,6 +34,7 @@ DATA_DIR = Path(os.environ.get("KAKAO_DATA_DIR", HERE))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE = DATA_DIR / "pc_state.json"
 EVENTS = DATA_DIR / "events.jsonl"        # PC 백엔드 전용
+WATCH = DATA_DIR / "watch.json"           # 감시할 chatId 목록(비면 전체)
 USERS_ROOT = os.path.expandvars(r"%LOCALAPPDATA%\Kakao\KakaoTalk\users")
 
 POLL_SEC = 5
@@ -423,6 +424,20 @@ def save_state(st):
     STATE.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
 
 
+def load_watch():
+    """감시할 chatId(str) 집합. 비어 있으면 '전체 감시'."""
+    if WATCH.exists():
+        try:
+            return set(str(x) for x in json.loads(WATCH.read_text(encoding="utf-8")))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_watch(ids):
+    WATCH.write_text(json.dumps(sorted(str(x) for x in ids), ensure_ascii=False), encoding="utf-8")
+
+
 def emit(ev):
     with open(EVENTS, "a", encoding="utf-8") as f:
         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -478,11 +493,20 @@ def process_room(chat_id, room, feeds, st):
 
 def run_once(pc, st, status=None):
     nk, nc = pc.refresh_keys()
-    rooms = pc.open_rooms()
+    rooms = pc.open_rooms()                 # 전체 오픈챗 {chatId:name}
+    watch = load_watch()                    # 감시 대상(비면 전체)
     if status is not None:
         status["rooms"] = {str(k): v for k, v in rooms.items()}
+        status["watch"] = sorted(watch)
         status["keys"] = nk
-    for cid, name in rooms.items():
+        if nk == 0:
+            status["hint"] = "PC 카톡이 로그인돼 있는지 확인하세요 (키를 못 찾음)."
+        elif not rooms:
+            status["hint"] = "오픈채팅 방이 없습니다. 카톡에서 감시할 오픈챗을 한 번 열어주세요."
+        else:
+            status["hint"] = None
+    target = {k: v for k, v in rooms.items() if not watch or str(k) in watch}
+    for cid, name in target.items():
         feeds = pc.room_feeds(cid, st["last"].get(str(cid), 0))
         if feeds:
             process_room(cid, name, feeds, st)
