@@ -46,7 +46,13 @@ python pc_detector.py --once     # 1회 패스: 오픈챗 목록 + 들낙 출력
 python app.py                    # 앱: http://127.0.0.1:8799 (네이티브 창 or 브라우저)
 ```
 
-데이터(상태/이벤트/화이트리스트)는 `%LOCALAPPDATA%\KakaoInoutDetector\` 에 저장.
+데이터(상태/이벤트/화이트리스트/감시목록)는 `%LOCALAPPDATA%\KakaoInoutDetector\` 에 저장
+(`pc_state.json`, `events.jsonl`, `notes.json`, `watch.json`).
+
+### 대시보드 기능
+- **현황** 타일(들낙 유저/관측/입장/퇴장) · **들낙 블랙리스트**(userId별, 닉 바꿔치기 묶임, 화이트리스트 토글) · **실시간 로그**(방 필터, 들낙만 보기).
+- **감시 방 설정**: 그 계정의 오픈챗을 체크박스로 나열 → 원하는 방만 감지(비우면 전체). `watch.json` 에 저장.
+- **안내 배너**: PC 카톡 미실행/미로그인/오픈챗 없음일 때 상단에 안내(5초마다 자동 재시도).
 
 ## 빌드 (단일 exe)
 
