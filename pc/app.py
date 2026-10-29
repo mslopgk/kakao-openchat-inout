@@ -25,14 +25,32 @@ os.environ["KAKAO_DATA_DIR"] = str(DATA_DIR)   # pc_detector 가 같은 폴더 �
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pc_detector as D  # noqa: E402
 
+APP_VERSION = "1.1.0"
 PORT = int(os.environ.get("PORT", "8799"))
 EVENTS = DATA_DIR / "events.jsonl"
 NOTES = DATA_DIR / "notes.json"
 PAGE = (RES / "dashboard.html").read_text(encoding="utf-8")
 
-STATUS = {"last_poll": None, "error": None, "keys": 0, "rooms": {}, "watch": [],
-          "hint": "시작 중… (PC 카톡이 켜져 있어야 합니다)",
-          "account": None, "backend": "PC KakaoTalk (SQLCipher)"}
+# phase — 대시보드가 화면 상태를 고르는 기준:
+#   starting(시작) · kakao_off(카톡 미실행) · no_account(로그인 계정 없음) · scanning(키 확인 중)
+#   no_keys(키 못 찾음=로그인 필요) · no_rooms(오픈챗 없음) · live(정상) · error(그 밖의 실패)
+STATUS = {"phase": "starting", "last_poll": None, "error": None, "keys": 0, "rooms": {},
+          "watch": [], "hint": "시작 중… (PC 카톡이 켜져 있어야 합니다)",
+          "account": None, "backend": "PC KakaoTalk (SQLCipher)", "started": time.time()}
+
+_HINTS = {
+    "kakao_off": "PC 카톡이 실행돼 있지 않습니다. 카톡을 켜고 로그인하세요.",
+    "no_account": "PC 카톡에 로그인된 계정이 없습니다. 카톡에 로그인하세요.",
+}
+
+
+def _phase_of(e):
+    msg = str(e)
+    if "미실행" in msg or "KakaoTalk.exe" in msg:
+        return "kakao_off"
+    if "user dir" in msg:
+        return "no_account"
+    return "error"
 
 
 # ---------------- 감지 스레드 ----------------
@@ -44,22 +62,29 @@ def detector_loop():
             st = D.load_state()
             while True:
                 try:
+                    if not pc.keys:
+                        STATUS["phase"] = "scanning"   # 첫 메모리 스캔은 수 초 걸림
                     rooms = D.run_once(pc, st, STATUS)
                     STATUS["rooms"] = {str(k): v for k, v in rooms.items()}
+                    STATUS["account"] = os.path.basename(pc.user_dir)[:10]
                     STATUS["last_poll"] = time.time()
                     STATUS["error"] = None
+                    STATUS["phase"] = ("no_keys" if not STATUS["keys"]
+                                       else "no_rooms" if not rooms else "live")
                 except Exception as e:
-                    STATUS["error"] = repr(e)
+                    ph = _phase_of(e)
+                    STATUS["phase"] = ph
+                    STATUS["error"] = repr(e) if ph == "error" else None
+                    if ph != "error":
+                        pc.keys = {}       # 카톡 재시작 시 키가 바뀌므로 다시 스캔
+                        STATUS["keys"] = 0
+                        STATUS["hint"] = _HINTS[ph]
                 time.sleep(D.POLL_SEC)
         except Exception as e:
-            msg = str(e)
-            if "미실행" in msg or "KakaoTalk.exe" in msg:
-                STATUS["hint"] = "PC 카톡이 실행돼 있지 않습니다. 카톡을 켜고 로그인하세요."
-            elif "user dir" in msg:
-                STATUS["hint"] = "PC 카톡에 로그인된 계정이 없습니다. 카톡에 로그인하세요."
-            else:
-                STATUS["hint"] = f"대기 중: {msg[:60]}"
-            STATUS["error"] = None
+            ph = _phase_of(e)
+            STATUS["phase"] = ph
+            STATUS["hint"] = _HINTS.get(ph, f"대기 중: {str(e)[:60]}")
+            STATUS["error"] = repr(e) if ph == "error" else None
             STATUS["keys"] = 0
             STATUS["rooms"] = {}
             time.sleep(5)
@@ -160,6 +185,8 @@ def api_status():
         "watch": STATUS.get("watch", []), "hint": STATUS.get("hint"),
         "error": STATUS["error"], "last_poll": lp,
         "age_sec": (round(time.time() - lp, 1) if lp else None),
+        "phase": STATUS["phase"], "keys": STATUS["keys"], "poll_sec": D.POLL_SEC,
+        "version": APP_VERSION, "uptime_sec": round(time.time() - STATUS["started"]),
     })
 
 
@@ -229,15 +256,63 @@ def serve():
     srv.serve_forever()
 
 
-def main():
-    threading.Thread(target=detector_loop, daemon=True).start()
-    threading.Thread(target=serve, daemon=True).start()
-    time.sleep(1.0)
-    url = f"http://127.0.0.1:{PORT}"
-    # 네이티브 창(pywebview) 우선, 실패 시 기본 브라우저
+def _has_webview2():
+    """pywebview 와 같은 기준(EdgeUpdate 레지스트리, 86+)으로 WebView2 런타임 확인.
+    없으면 pywebview 가 IE 엔진(MSHTML)으로 떨어지는데, IE 는 대시보드 JS 를 못 돌려
+    화면이 '연결 확인중'에서 멈춘다 → 그럴 땐 창 대신 기본 브라우저로 연다."""
     try:
+        import platform
+        import winreg
+    except ImportError:
+        return False
+    key = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    wow = "" if platform.machine().lower() == "x86" else "WOW6432Node\\"
+    for hive, path in ((winreg.HKEY_CURRENT_USER, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{key}"),
+                       (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\{wow}Microsoft\EdgeUpdate\Clients\{key}")):
+        try:
+            with winreg.OpenKey(hive, path) as k:
+                pv, _ = winreg.QueryValueEx(k, "pv")
+            if int(str(pv).split(".")[0]) >= 86:
+                return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+
+def _already_running(url):
+    """같은 포트에 이미 이 앱이 떠 있으면 True (중복 실행 시 감지 스레드 이중 가동 방지)."""
+    from urllib.request import urlopen
+    try:
+        with urlopen(url + "/api/status", timeout=1.5) as r:
+            return "phase" in json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return False
+
+
+def _wait_ready(url, timeout=10.0):
+    from urllib.request import urlopen
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            with urlopen(url + "/api/status", timeout=1):
+                return
+        except Exception:
+            time.sleep(0.15)
+
+
+def main():
+    url = f"http://127.0.0.1:{PORT}"
+    if not _already_running(url):
+        threading.Thread(target=detector_loop, daemon=True).start()
+        threading.Thread(target=serve, daemon=True).start()
+        _wait_ready(url)
+    # 네이티브 창(pywebview, WebView2) 우선, 불가하면 기본 브라우저
+    try:
+        if not _has_webview2():
+            raise RuntimeError("WebView2 runtime 없음")
         import webview  # type: ignore
-        webview.create_window("들낙 감지기", url, width=1180, height=860)
+        webview.create_window("들낙 감지기", url, width=1240, height=860,
+                              min_size=(900, 600), background_color="#0f1115")
         webview.start()
     except Exception:
         import webbrowser
