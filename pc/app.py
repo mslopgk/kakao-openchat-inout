@@ -130,7 +130,25 @@ from flask import Flask, jsonify, request, Response  # noqa: E402
 app = Flask(__name__)
 app.logger.disabled = True
 import logging  # noqa: E402
+from urllib.parse import urlparse  # noqa: E402
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+_ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+
+
+@app.before_request
+def _csrf_guard():
+    """상태변경 요청은 로컬 대시보드에서 온 JSON 만 허용.
+    서버가 127.0.0.1 에만 떠 있어도, 사용자가 연 외부 웹페이지가 브라우저를 통해
+    POST 로 감시목록·화이트리스트를 바꾸는 CSRF 를 막는다. 외부 사이트는 교차출처
+    JSON POST 시 프리플라이트가 필요한데 이 서버는 허용하지 않으므로 차단된다."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    origin = request.headers.get("Origin")
+    if origin and urlparse(origin).netloc not in _ALLOWED_HOSTS:
+        return jsonify({"ok": False, "error": "forbidden origin"}), 403
+    if not request.is_json:
+        return jsonify({"ok": False, "error": "json required"}), 415
 
 
 @app.get("/api/status")
@@ -152,7 +170,7 @@ def api_watch_get():
 
 @app.post("/api/watch")
 def api_watch_set():
-    d = request.get_json(force=True)
+    d = request.get_json(silent=True) or {}
     ids = d.get("watch", [])
     if not isinstance(ids, list):
         return jsonify({"ok": False}), 400
@@ -186,7 +204,7 @@ def api_summary():
 
 @app.post("/api/note")
 def api_note():
-    d = request.get_json(force=True)
+    d = request.get_json(silent=True) or {}
     uid = str(d.get("userId", ""))
     if not uid:
         return jsonify({"ok": False}), 400
