@@ -394,6 +394,22 @@ def _copy_set(edb, dstdir):
     return os.path.join(dstdir, base)
 
 
+# chatRoomTitle 은 카톡의 표시용 캐시라, 멤버 목록을 못 불러온 방엔 이런 대체 문구가 박힌다(26.9.1 실측)
+_TITLE_PLACEHOLDERS = {"대화상대 없음", "(알 수 없음)", "알 수 없음"}
+
+
+def _room_name(typ, title, link_name, custom):
+    """방 이름: 사용자 지정 제목 > (그룹 오픈챗) 링크 이름 > 표시 제목. 대체 문구는 버린다."""
+    title = (title or "").strip()
+    if title in _TITLE_PLACEHOLDERS:
+        title = ""
+    if custom and title:
+        return title
+    if typ == "OM":
+        return link_name or title
+    return title or link_name                # OD(1:1 오픈챗): 상대 표시명 우선
+
+
 def _sweep_stale_tmp(max_age=600):
     """강제 종료로 남은 이전 실행의 복호화 임시폴더 삭제. 실행 중인 다른 인스턴스는
     매 폴링 폴더를 갱신하므로 max_age 보다 오래 안 바뀐 것만 지운다."""
@@ -523,10 +539,11 @@ class PCKakao:
                     pass
         try:
             con = sqlite3.connect(dec)
-            for r in con.execute("select chatId,type,chatRoomTitle,linkId from chatRoomList"):
-                cid, typ, title, linkId = r
+            for r in con.execute("select chatId,type,chatRoomTitle,linkId,useCustomChatRoomTitle "
+                                 "from chatRoomList"):
+                cid, typ, title, linkId, custom = r
                 if typ in OPEN_TYPES:
-                    rooms[int(cid)] = title or link_name.get(linkId) or str(cid)
+                    rooms[int(cid)] = _room_name(typ, title, link_name.get(linkId), custom) or str(cid)
             con.close()
         except Exception:
             pass
