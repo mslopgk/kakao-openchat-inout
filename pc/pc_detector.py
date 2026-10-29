@@ -374,6 +374,15 @@ def active_user_dir():
     return best
 
 
+def _account_of(edb_path):
+    """edb 절대경로 -> 소속 계정 폴더(USERS_ROOT/<acct>)."""
+    try:
+        acct = os.path.relpath(edb_path, USERS_ROOT).split(os.sep)[0]
+    except ValueError:
+        return os.path.dirname(os.path.dirname(edb_path))
+    return os.path.join(USERS_ROOT, acct)
+
+
 def _copy_set(edb, dstdir):
     """edb + wal + shm 를 임시폴더로 복사(원본 보호), 복사된 .edb 경로 반환."""
     base = os.path.basename(edb)
@@ -391,27 +400,64 @@ class PCKakao:
             raise RuntimeError("PC 카톡 user dir 없음")
         self.keys = {}        # edb_path(소문자 basename) -> key
         self.tmp = tempfile.mkdtemp(prefix="pckak_det_")
+        self._last_codecs = 0
+        self._pass_dirs = []  # 이번 폴링에서 만든 복호화 임시폴더(끝나면 prune)
 
     # --- 키 추출 ---
     def refresh_keys(self):
+        """카톡 메모리를 스캔해 키를 복구하고, 키가 가장 많이 나온 계정을
+        감시 대상으로 삼는다(= 지금 로그인돼 메모리에 떠 있는 계정).
+        active_user_dir() 의 수정시각 추정보다 신뢰도가 높다."""
         pids = find_pids()
         if not pids:
             raise RuntimeError("KakaoTalk.exe 미실행")
-        edbs = glob.glob(os.path.join(self.user_dir, "**", "*.edb"), recursive=True)
+        # 모든 계정의 edb 로 오라클 구성(어느 계정이 메모리에 있든 맞춰짐)
+        edbs = glob.glob(os.path.join(USERS_ROOT, "*", "chat_data", "**", "*.edb"),
+                         recursive=True)
         pages = []
         for e in edbs:
             try:
-                pages.append((e, open(e, "rb").read(PAGE)))
+                d = open(e, "rb").read(PAGE)
+                if len(d) >= PAGE:
+                    pages.append((e, d))
             except OSError:
                 pass
         regs = []
         for pid in pids:
             regs += read_regions(pid)
         found, codecs = recover_keys(regs, [p for _e, p in pages])
-        self.keys = {}
+        self._last_codecs = len(codecs)
+        by_acct = {}
         for k, idx in found.items():
-            self.keys[os.path.basename(pages[idx][0]).lower()] = k
+            path = pages[idx][0]
+            by_acct.setdefault(_account_of(path), {})[os.path.basename(path).lower()] = k
+        if by_acct:
+            self.user_dir = max(by_acct, key=lambda a: len(by_acct[a]))
+            self.keys = by_acct[self.user_dir]
+        else:
+            self.keys = {}
         return len(self.keys), len(codecs)
+
+    def _keys_valid(self):
+        """캐시된 키가 아직 이 계정 DB 를 여는지 1-AES 로 싸게 확인
+        (카톡 재시작 시 키가 바뀌면 False → 재추출 유도)."""
+        if not self.keys:
+            return False
+        cli = os.path.join(self.user_dir, "chat_data", "chatListInfo.edb")
+        try:
+            fp = open(cli, "rb").read(PAGE)
+        except OSError:
+            return False
+        return any(try_key(fp, k) for k in self.keys.values())
+
+    def ensure_keys(self):
+        """키가 유효하면 메모리 스캔을 건너뛴다(폴링마다 수백 MB 재스캔 방지).
+        무효/없음일 때만 refresh_keys() 로 재추출."""
+        if not find_pids():
+            raise RuntimeError("KakaoTalk.exe 미실행")
+        if self._keys_valid():
+            return len(self.keys), self._last_codecs
+        return self.refresh_keys()
 
     def _decrypt(self, edb):
         key = self.keys.get(os.path.basename(edb).lower())
@@ -425,11 +471,18 @@ class PCKakao:
             if not key:
                 return None
         work = tempfile.mkdtemp(dir=self.tmp)
+        self._pass_dirs.append(work)
         src = _copy_set(edb, work)
         dst = src + ".sqlite"
         if decrypt_edb(src, dst, key):
             return dst
         return None
+
+    def prune(self):
+        """이번 폴링에서 만든 복호화 임시폴더 정리(디스크 누적 방지)."""
+        for d in self._pass_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+        self._pass_dirs = []
 
     # --- 오픈채팅 방 목록 ---
     def open_rooms(self):
@@ -569,7 +622,7 @@ def process_room(chat_id, room, feeds, st):
 
 
 def run_once(pc, st, status=None):
-    nk, nc = pc.refresh_keys()
+    nk, nc = pc.ensure_keys()
     rooms = pc.open_rooms()                 # 전체 오픈챗 {chatId:name}
     watch = load_watch()                    # 감시 대상(비면 전체)
     if status is not None:
@@ -588,6 +641,7 @@ def run_once(pc, st, status=None):
         if feeds:
             process_room(cid, name, feeds, st)
     save_state(st)
+    pc.prune()                              # 이번 폴링 임시폴더 정리
     return rooms
 
 
