@@ -200,23 +200,66 @@ def try_key(first_page, key):
         return False
 
 
-def decrypt_edb(src, dst, key):
-    data = open(src, "rb").read()
-    out = bytearray()
+def _dec_page(page, is_first, key):
+    """암호화된 4096B 페이지 하나를 평문 SQLite 페이지로. reserve 영역은 0으로 채움."""
     usable = PAGE - RESERVE
-    pg = 0
-    for off in range(0, len(data), PAGE):
-        page = data[off:off + PAGE]
+    iv = page[usable:usable + 16]
+    if is_first:
+        body = MAGIC + _aes_dec(key, iv, page[16:usable])
+    else:
+        body = _aes_dec(key, iv, page[:usable])
+    return body + b"\x00" * RESERVE
+
+
+def _apply_wal(walpath, pages, dbsize, key):
+    """SQLCipher WAL 프레임을 복호화해 pages(pageno->평문페이지)에 반영.
+    카톡 26.9.x 는 메인 .edb 가 거의 비어 있고 스키마·행이 전부 -wal 에 있다.
+    WAL 헤더(32B)·프레임헤더(24B)는 평문, 프레임 페이지 본문만 DB 페이지와 동일하게 암호화."""
+    try:
+        w = open(walpath, "rb").read()
+    except OSError:
+        return dbsize
+    if len(w) < 32 + 24 + PAGE:
+        return dbsize
+    wsalt = w[16:24]                       # WAL 헤더의 salt (현재 체크포인트 식별)
+    frames = []
+    off = 32
+    while off + 24 + PAGE <= len(w):
+        fh = w[off:off + 24]
+        pgno = int.from_bytes(fh[0:4], "big")
+        commit = int.from_bytes(fh[4:8], "big")   # !=0 이면 커밋 프레임(그 시점 DB 페이지수)
+        fsalt = fh[8:16]
+        body = w[off + 24:off + 24 + PAGE]
+        frames.append((pgno, commit, fsalt, body))
+        off += 24 + PAGE
+    # salt 가 현재 WAL 헤더와 일치하는 마지막 커밋 프레임까지만 유효
+    last = -1
+    for i, (_p, commit, fsalt, _b) in enumerate(frames):
+        if fsalt == wsalt and commit:
+            last = i
+    for i in range(last + 1):
+        pgno, commit, fsalt, body = frames[i]
+        if fsalt != wsalt:
+            continue
+        pages[pgno] = _dec_page(body, pgno == 1, key)
+        if commit:
+            dbsize = commit
+    return dbsize
+
+
+def decrypt_edb(src, dst, key):
+    """src(.edb) + src-wal 을 복호화해 dst(평문 SQLite)로. WAL 이 있으면 리플레이한다."""
+    data = open(src, "rb").read()
+    pages = {}
+    nmain = len(data) // PAGE
+    for i in range(nmain):
+        page = data[i * PAGE:(i + 1) * PAGE]
         if len(page) == PAGE:
-            iv = page[usable:usable + 16]
-            if pg == 0:
-                plain = MAGIC + _aes_dec(key, iv, page[16:usable])
-            else:
-                plain = _aes_dec(key, iv, page[:usable])
-            out += plain + b"\x00" * RESERVE
-        else:
-            out += page
-        pg += 1
+            pages[i + 1] = _dec_page(page, i == 0, key)
+    dbsize = _apply_wal(src + "-wal", pages, nmain, key)
+    out = bytearray()
+    for n in range(1, dbsize + 1):
+        out += pages.get(n, b"\x00" * PAGE)
     open(dst, "wb").write(bytes(out))
     return bytes(out[:16]) == MAGIC
 
@@ -243,8 +286,27 @@ def _codec_addrs(regs):
     return out
 
 
+PTR_MAX = 0x7FFFFFFFFFFF
+
+
+def _ptrs(blob):
+    """codec 주변 포인터 후보. 4바이트 간격으로 32비트·64비트 둘 다 시도한다.
+    카톡 빌드에 따라 codec_ctx 안의 포인터가 32비트 값(힙 <4GB)으로 4바이트
+    정렬돼 박히기도 하고(26.9.1 실측), 8바이트 정렬 64비트이기도 하다(26.9.0).
+    8바이트 간격만 읽으면 전자는 인접 포인터 2개가 합쳐져 범위를 넘어 전부 버려진다."""
+    n = len(blob)
+    for i in range(0, n - 4, 4):
+        p32 = int.from_bytes(blob[i:i + 4], "little")
+        if 0x10000 <= p32 < PTR_MAX:
+            yield p32
+        if i + 8 <= n:
+            p64 = int.from_bytes(blob[i:i + 8], "little")
+            if 0x10000 <= p64 < PTR_MAX:
+                yield p64
+
+
 def recover_keys(regs, oracle_pages):
-    """{key -> oracle_page_index} — codec 주변 64비트 포인터 역참조 후 실제 edb로 검증."""
+    """{key -> oracle_page_index} — codec 주변 포인터 역참조 후 실제 edb로 검증."""
     _index(regs)
     codecs = _codec_addrs(regs)
     found = {}
@@ -259,10 +321,6 @@ def recover_keys(regs, oracle_pages):
                 found[k] = i
                 return
 
-    def ptrs(blob):
-        for i in range(0, len(blob) - 8, 8):
-            yield int.from_bytes(blob[i:i + 8], "little")
-
     for ctx in codecs:
         r = _region_of(ctx)
         if not r:
@@ -270,19 +328,16 @@ def recover_keys(regs, oracle_pages):
         base, data = r
         o = ctx - base
         win = data[max(0, o - 256):o + 2304]
-        for p in ptrs(win):
-            if not (0x10000 <= p < 0x7FFFFFFFFFFF):
-                continue
+        for p in _ptrs(win):
             k = _read_from(p, 32)
             if k:
                 test(k)
-            s = _read_from(p, 160)
+            s = _read_from(p, 256)
             if s:
-                for p2 in ptrs(s):
-                    if 0x10000 <= p2 < 0x7FFFFFFFFFFF:
-                        k2 = _read_from(p2, 32)
-                        if k2:
-                            test(k2)
+                for p2 in _ptrs(s):
+                    k2 = _read_from(p2, 32)
+                    if k2:
+                        test(k2)
     return found, codecs
 
 
