@@ -39,4 +39,5 @@ pc/dist/
 pc/__pycache__/
 pc/pc_state.json
 pc/events.jsonl
+pc/watch.json
 *.exe

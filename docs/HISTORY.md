@@ -127,10 +127,26 @@ userId 로 묶임 확인. UI 미리보기 아티팩트로 확인.
 - `feat/ui-redesign-and-docs`: 7(UI) + 문서 정리. **이 핸드오프 시점에 아직 master 미머지.**
 
 ### 이어서 할 일 (다른 PC에서 resume)
-- [ ] `feat/ui-redesign-and-docs` 의 문서 정리 마무리(README·pc/README·detector/README 익명화
+- [x] `feat/ui-redesign-and-docs` 의 문서 정리 마무리(README·pc/README·detector/README 익명화
       일부 진행함) 후 커밋.
-- [ ] 새 `dashboard.html` 반영해 **exe 재빌드**(`pyinstaller app.spec --noconfirm`).
-- [ ] `feat/ui-redesign-and-docs` → `master` 머지(또는 PR).
+- [x] 새 `dashboard.html` 반영해 **exe 재빌드**(`pyinstaller app.spec --noconfirm`).
+- [x] `feat/ui-redesign-and-docs` → `master` 머지(또는 PR).
 - [ ] (선택) GitHub 저장소를 private 로 전환할지 결정. 현재 **public**.
+
+## 9. resume 마무리 + 이모지 닉 버그 (2026-10-30)
+
+새 PC 에서 이어받아 마무리. 환경: Git 2.56 / gh 2.103 / Python 3.13.15(+flask, cryptography,
+pywebview, pyinstaller 6.22) / PC 카톡 실행 중.
+
+- 문서 익명화 재점검 — 문서·코드에 실제 userId·닉 없음 확인. `.gitignore` 에 `pc/watch.json`
+  추가(감지기 단독 실행 시 `pc/` 에 생겨 감시 chatId 가 커밋될 수 있었음).
+- **버그: 이모지 닉에서 감지 정지 + 이벤트 중복.** `emit()` 이 `events.jsonl` 에 먼저 쓰고
+  콘솔 `print` 에서 `UnicodeEncodeError(cp949)` → `run_once` 가 상태 저장 전에 터져 같은 이벤트가
+  매 폴링 재기록되고 진행이 멈춤. → stdout `errors="replace"` + `emit` 의 print 를 try 로 감쌈
+  (콘솔 출력은 부가 기능). cp949 콘솔·쓰기 불가 stdout 둘 다 이벤트 정상 기록 확인.
+- exe 재빌드 후 테스트 계정으로 스모크: 계정 자동선택(테스트 계정), 키 복구, 방 탐지, 폴링
+  오류 없음, 새 UI 서빙, 외부 Origin POST 403.
+- 주의: 테스트는 반드시 **테스트 계정**으로. 실행 중 강제 종료 시 `%TEMP%\pckak_det_*` 에
+  복호화 DB 사본이 남을 수 있으니 삭제할 것.
 - 미검증/한계: 64비트 힙 경로(이 PC엔 32비트 경우만 있어 미실측), codec 파라미터·테이블/컬럼명·
   피드 JSON 하드코딩(버전업 시 재확인), 강퇴(6)·초대(1) 피드 포맷 미실측, 백신 오탐·권한 차단.

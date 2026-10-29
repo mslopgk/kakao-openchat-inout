@@ -45,7 +45,7 @@ FEED_TYPES = {1: "초대", 2: "퇴장", 4: "입장", 6: "강퇴"}
 OPEN_TYPES = {"OM", "OD"}                 # 오픈채팅 그룹/다이렉트
 
 try:
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
@@ -572,9 +572,14 @@ def emit(ev):
     with open(EVENTS, "a", encoding="utf-8") as f:
         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
     tag = "🚨 들낙" if ev.get("deullak") else "  "
-    print(f"{tag} [{ev['time']}] {ev['room']} | {ev['action']} | "
-          f"{ev['nick']} (userId={ev['userId']})"
-          + (f" -> {ev['reason']}" if ev.get("reason") else ""), flush=True)
+    # 콘솔 출력은 부가 기능 — 인코딩 실패(cp949 + 이모지 닉)가 상태 저장을 막아
+    # 같은 이벤트가 매 폴링 중복 기록되던 문제 방지
+    try:
+        print(f"{tag} [{ev['time']}] {ev['room']} | {ev['action']} | "
+              f"{ev['nick']} (userId={ev['userId']})"
+              + (f" -> {ev['reason']}" if ev.get("reason") else ""), flush=True)
+    except Exception:
+        pass
 
 
 def judge(hist, action, ts):
