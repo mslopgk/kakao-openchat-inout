@@ -214,37 +214,59 @@ def _dec_page(page, is_first, key):
 def _apply_wal(walpath, pages, dbsize, key):
     """SQLCipher WAL 프레임을 복호화해 pages(pageno->평문페이지)에 반영.
     카톡 26.9.x 는 메인 .edb 가 거의 비어 있고 스키마·행이 전부 -wal 에 있다.
-    WAL 헤더(32B)·프레임헤더(24B)는 평문, 프레임 페이지 본문만 DB 페이지와 동일하게 암호화."""
+    WAL 헤더(32B)·프레임헤더(24B)는 평문, 프레임 페이지 본문만 DB 페이지와 동일하게 암호화.
+
+    SQLite WAL 의 누적 체크섬·커밋 규칙을 그대로 지킨다: 체크섬이 처음 어긋나는
+    프레임에서 유효 WAL 이 끝나고, 확정은 '커밋 프레임'까지만. 덕분에 카톡이 WAL 에
+    쓰는 중 비원자적으로 복사해 뒤쪽 프레임이 찢겨도 멀쩡한 접두부만 반영되어
+    특정 페이지가 조용히 깨지는 일이 없다."""
     try:
         w = open(walpath, "rb").read()
     except OSError:
         return dbsize
     if len(w) < 32 + 24 + PAGE:
         return dbsize
-    wsalt = w[16:24]                       # WAL 헤더의 salt (현재 체크포인트 식별)
-    frames = []
+    magic = int.from_bytes(w[0:4], "big")
+    if magic & 0xFFFFFFFE != 0x377F0682:   # WAL 매직 아님
+        return dbsize
+    # 체크섬 '입력 워드'는 매직이 지정한 오더로 읽지만, '저장된 체크섬 값'은 항상 big-endian.
+    order = "big" if (magic & 1) else "little"
+    wsalt = w[16:24]
+
+    def addsum(s0, s1, blob):
+        for i in range(0, len(blob), 8):
+            s0 = (s0 + int.from_bytes(blob[i:i + 4], order) + s1) & 0xFFFFFFFF
+            s1 = (s1 + int.from_bytes(blob[i + 4:i + 8], order) + s0) & 0xFFFFFFFF
+        return s0, s1
+
+    def stored(b4a, b4b):
+        return (int.from_bytes(b4a, "big"), int.from_bytes(b4b, "big"))
+
+    # 헤더[0:24] 로 체크섬 시드, 저장된 헤더 체크섬[24:32] 과 대조
+    s0, s1 = addsum(0, 0, w[0:24])
+    if (s0, s1) != stored(w[24:28], w[28:32]):
+        return dbsize                       # 헤더 손상 → WAL 전체 무시
+
     off = 32
+    staged = {}                             # 아직 커밋 안 된 페이지(마지막 커밋에서 확정)
+    committed = dbsize
     while off + 24 + PAGE <= len(w):
         fh = w[off:off + 24]
-        pgno = int.from_bytes(fh[0:4], "big")
-        commit = int.from_bytes(fh[4:8], "big")   # !=0 이면 커밋 프레임(그 시점 DB 페이지수)
-        fsalt = fh[8:16]
         body = w[off + 24:off + 24 + PAGE]
-        frames.append((pgno, commit, fsalt, body))
+        c0, c1 = addsum(s0, s1, fh[0:8])    # 프레임헤더[0:8] + 페이지본문
+        c0, c1 = addsum(c0, c1, body)
+        if fh[8:16] != wsalt or (c0, c1) != stored(fh[16:20], fh[20:24]):
+            break                           # 솔트/체크섬 불일치 → 유효 WAL 끝
+        s0, s1 = c0, c1
+        staged[int.from_bytes(fh[0:4], "big")] = body
+        commit = int.from_bytes(fh[4:8], "big")
+        if commit:                          # 커밋 프레임: 여기까지 확정
+            for n, b in staged.items():
+                pages[n] = _dec_page(b, n == 1, key)
+            staged.clear()
+            committed = commit
         off += 24 + PAGE
-    # salt 가 현재 WAL 헤더와 일치하는 마지막 커밋 프레임까지만 유효
-    last = -1
-    for i, (_p, commit, fsalt, _b) in enumerate(frames):
-        if fsalt == wsalt and commit:
-            last = i
-    for i in range(last + 1):
-        pgno, commit, fsalt, body = frames[i]
-        if fsalt != wsalt:
-            continue
-        pages[pgno] = _dec_page(body, pgno == 1, key)
-        if commit:
-            dbsize = commit
-    return dbsize
+    return committed
 
 
 def decrypt_edb(src, dst, key):
