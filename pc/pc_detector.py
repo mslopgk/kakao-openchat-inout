@@ -11,6 +11,7 @@ authorId/member.userId 가 방 내에서 안정적이라 프로필 바꿔치기�
 오픈채팅 피드만 처리한다.
 """
 import bisect
+import atexit
 import ctypes
 import ctypes.wintypes as wt
 import glob
@@ -393,13 +394,27 @@ def _copy_set(edb, dstdir):
     return os.path.join(dstdir, base)
 
 
+def _sweep_stale_tmp(max_age=600):
+    """강제 종료로 남은 이전 실행의 복호화 임시폴더 삭제. 실행 중인 다른 인스턴스는
+    매 폴링 폴더를 갱신하므로 max_age 보다 오래 안 바뀐 것만 지운다."""
+    now = time.time()
+    for d in glob.glob(os.path.join(tempfile.gettempdir(), "pckak_det_*")):
+        try:
+            if now - os.path.getmtime(d) > max_age:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
 class PCKakao:
     def __init__(self):
         self.user_dir = active_user_dir()
         if not self.user_dir:
             raise RuntimeError("PC 카톡 user dir 없음")
         self.keys = {}        # edb_path(소문자 basename) -> key
+        _sweep_stale_tmp()
         self.tmp = tempfile.mkdtemp(prefix="pckak_det_")
+        atexit.register(shutil.rmtree, self.tmp, True)
         self._last_codecs = 0
         self._pass_dirs = []  # 이번 폴링에서 만든 복호화 임시폴더(끝나면 prune)
 
@@ -628,25 +643,27 @@ def process_room(chat_id, room, feeds, st):
 
 def run_once(pc, st, status=None):
     nk, nc = pc.ensure_keys()
-    rooms = pc.open_rooms()                 # 전체 오픈챗 {chatId:name}
-    watch = load_watch()                    # 감시 대상(비면 전체)
-    if status is not None:
-        status["rooms"] = {str(k): v for k, v in rooms.items()}
-        status["watch"] = sorted(watch)
-        status["keys"] = nk
-        if nk == 0:
-            status["hint"] = "PC 카톡이 로그인돼 있는지 확인하세요 (키를 못 찾음)."
-        elif not rooms:
-            status["hint"] = "오픈채팅 방이 없습니다. 카톡에서 감시할 오픈챗을 한 번 열어주세요."
-        else:
-            status["hint"] = None
-    target = {k: v for k, v in rooms.items() if not watch or str(k) in watch}
-    for cid, name in target.items():
-        feeds = pc.room_feeds(cid, st["last"].get(str(cid), 0))
-        if feeds:
-            process_room(cid, name, feeds, st)
-    save_state(st)
-    pc.prune()                              # 이번 폴링 임시폴더 정리
+    try:
+        rooms = pc.open_rooms()             # 전체 오픈챗 {chatId:name}
+        watch = load_watch()                # 감시 대상(비면 전체)
+        if status is not None:
+            status["rooms"] = {str(k): v for k, v in rooms.items()}
+            status["watch"] = sorted(watch)
+            status["keys"] = nk
+            if nk == 0:
+                status["hint"] = "PC 카톡이 로그인돼 있는지 확인하세요 (키를 못 찾음)."
+            elif not rooms:
+                status["hint"] = "오픈채팅 방이 없습니다. 카톡에서 감시할 오픈챗을 한 번 열어주세요."
+            else:
+                status["hint"] = None
+        target = {k: v for k, v in rooms.items() if not watch or str(k) in watch}
+        for cid, name in target.items():
+            feeds = pc.room_feeds(cid, st["last"].get(str(cid), 0))
+            if feeds:
+                process_room(cid, name, feeds, st)
+        save_state(st)
+    finally:
+        pc.prune()                          # 이번 폴링 임시폴더 정리(실패해도 복호화본 남기지 않음)
     return rooms
 
 
