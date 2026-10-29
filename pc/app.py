@@ -93,6 +93,7 @@ def detector_loop():
 # ---------------- 데이터 ----------------
 def load_events():
     out = []
+    names = STATUS["rooms"]   # 이벤트에 저장된 방 이름은 기록 당시 값 → 현재 이름으로 표시
     if EVENTS.exists():
         for line in EVENTS.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -105,6 +106,7 @@ def load_events():
             e.pop("raw", None)
             e["userId"] = str(e.get("userId", ""))
             e["chatId"] = str(e.get("chatId", ""))
+            e["room"] = names.get(e["chatId"]) or e.get("room", "")
             out.append(e)
     return out
 
