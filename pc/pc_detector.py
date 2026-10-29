@@ -200,23 +200,88 @@ def try_key(first_page, key):
         return False
 
 
-def decrypt_edb(src, dst, key):
-    data = open(src, "rb").read()
-    out = bytearray()
+def _dec_page(page, is_first, key):
+    """암호화된 4096B 페이지 하나를 평문 SQLite 페이지로. reserve 영역은 0으로 채움."""
     usable = PAGE - RESERVE
-    pg = 0
-    for off in range(0, len(data), PAGE):
-        page = data[off:off + PAGE]
+    iv = page[usable:usable + 16]
+    if is_first:
+        body = MAGIC + _aes_dec(key, iv, page[16:usable])
+    else:
+        body = _aes_dec(key, iv, page[:usable])
+    return body + b"\x00" * RESERVE
+
+
+def _apply_wal(walpath, pages, dbsize, key):
+    """SQLCipher WAL 프레임을 복호화해 pages(pageno->평문페이지)에 반영.
+    카톡 26.9.x 는 메인 .edb 가 거의 비어 있고 스키마·행이 전부 -wal 에 있다.
+    WAL 헤더(32B)·프레임헤더(24B)는 평문, 프레임 페이지 본문만 DB 페이지와 동일하게 암호화.
+
+    SQLite WAL 의 누적 체크섬·커밋 규칙을 그대로 지킨다: 체크섬이 처음 어긋나는
+    프레임에서 유효 WAL 이 끝나고, 확정은 '커밋 프레임'까지만. 덕분에 카톡이 WAL 에
+    쓰는 중 비원자적으로 복사해 뒤쪽 프레임이 찢겨도 멀쩡한 접두부만 반영되어
+    특정 페이지가 조용히 깨지는 일이 없다."""
+    try:
+        w = open(walpath, "rb").read()
+    except OSError:
+        return dbsize
+    if len(w) < 32 + 24 + PAGE:
+        return dbsize
+    magic = int.from_bytes(w[0:4], "big")
+    if magic & 0xFFFFFFFE != 0x377F0682:   # WAL 매직 아님
+        return dbsize
+    # 체크섬 '입력 워드'는 매직이 지정한 오더로 읽지만, '저장된 체크섬 값'은 항상 big-endian.
+    order = "big" if (magic & 1) else "little"
+    wsalt = w[16:24]
+
+    def addsum(s0, s1, blob):
+        for i in range(0, len(blob), 8):
+            s0 = (s0 + int.from_bytes(blob[i:i + 4], order) + s1) & 0xFFFFFFFF
+            s1 = (s1 + int.from_bytes(blob[i + 4:i + 8], order) + s0) & 0xFFFFFFFF
+        return s0, s1
+
+    def stored(b4a, b4b):
+        return (int.from_bytes(b4a, "big"), int.from_bytes(b4b, "big"))
+
+    # 헤더[0:24] 로 체크섬 시드, 저장된 헤더 체크섬[24:32] 과 대조
+    s0, s1 = addsum(0, 0, w[0:24])
+    if (s0, s1) != stored(w[24:28], w[28:32]):
+        return dbsize                       # 헤더 손상 → WAL 전체 무시
+
+    off = 32
+    staged = {}                             # 아직 커밋 안 된 페이지(마지막 커밋에서 확정)
+    committed = dbsize
+    while off + 24 + PAGE <= len(w):
+        fh = w[off:off + 24]
+        body = w[off + 24:off + 24 + PAGE]
+        c0, c1 = addsum(s0, s1, fh[0:8])    # 프레임헤더[0:8] + 페이지본문
+        c0, c1 = addsum(c0, c1, body)
+        if fh[8:16] != wsalt or (c0, c1) != stored(fh[16:20], fh[20:24]):
+            break                           # 솔트/체크섬 불일치 → 유효 WAL 끝
+        s0, s1 = c0, c1
+        staged[int.from_bytes(fh[0:4], "big")] = body
+        commit = int.from_bytes(fh[4:8], "big")
+        if commit:                          # 커밋 프레임: 여기까지 확정
+            for n, b in staged.items():
+                pages[n] = _dec_page(b, n == 1, key)
+            staged.clear()
+            committed = commit
+        off += 24 + PAGE
+    return committed
+
+
+def decrypt_edb(src, dst, key):
+    """src(.edb) + src-wal 을 복호화해 dst(평문 SQLite)로. WAL 이 있으면 리플레이한다."""
+    data = open(src, "rb").read()
+    pages = {}
+    nmain = len(data) // PAGE
+    for i in range(nmain):
+        page = data[i * PAGE:(i + 1) * PAGE]
         if len(page) == PAGE:
-            iv = page[usable:usable + 16]
-            if pg == 0:
-                plain = MAGIC + _aes_dec(key, iv, page[16:usable])
-            else:
-                plain = _aes_dec(key, iv, page[:usable])
-            out += plain + b"\x00" * RESERVE
-        else:
-            out += page
-        pg += 1
+            pages[i + 1] = _dec_page(page, i == 0, key)
+    dbsize = _apply_wal(src + "-wal", pages, nmain, key)
+    out = bytearray()
+    for n in range(1, dbsize + 1):
+        out += pages.get(n, b"\x00" * PAGE)
     open(dst, "wb").write(bytes(out))
     return bytes(out[:16]) == MAGIC
 
@@ -243,8 +308,27 @@ def _codec_addrs(regs):
     return out
 
 
+PTR_MAX = 0x7FFFFFFFFFFF
+
+
+def _ptrs(blob):
+    """codec 주변 포인터 후보. 4바이트 간격으로 32비트·64비트 둘 다 시도한다.
+    카톡 빌드에 따라 codec_ctx 안의 포인터가 32비트 값(힙 <4GB)으로 4바이트
+    정렬돼 박히기도 하고(26.9.1 실측), 8바이트 정렬 64비트이기도 하다(26.9.0).
+    8바이트 간격만 읽으면 전자는 인접 포인터 2개가 합쳐져 범위를 넘어 전부 버려진다."""
+    n = len(blob)
+    for i in range(0, n - 4, 4):
+        p32 = int.from_bytes(blob[i:i + 4], "little")
+        if 0x10000 <= p32 < PTR_MAX:
+            yield p32
+        if i + 8 <= n:
+            p64 = int.from_bytes(blob[i:i + 8], "little")
+            if 0x10000 <= p64 < PTR_MAX:
+                yield p64
+
+
 def recover_keys(regs, oracle_pages):
-    """{key -> oracle_page_index} — codec 주변 64비트 포인터 역참조 후 실제 edb로 검증."""
+    """{key -> oracle_page_index} — codec 주변 포인터 역참조 후 실제 edb로 검증."""
     _index(regs)
     codecs = _codec_addrs(regs)
     found = {}
@@ -259,10 +343,6 @@ def recover_keys(regs, oracle_pages):
                 found[k] = i
                 return
 
-    def ptrs(blob):
-        for i in range(0, len(blob) - 8, 8):
-            yield int.from_bytes(blob[i:i + 8], "little")
-
     for ctx in codecs:
         r = _region_of(ctx)
         if not r:
@@ -270,19 +350,16 @@ def recover_keys(regs, oracle_pages):
         base, data = r
         o = ctx - base
         win = data[max(0, o - 256):o + 2304]
-        for p in ptrs(win):
-            if not (0x10000 <= p < 0x7FFFFFFFFFFF):
-                continue
+        for p in _ptrs(win):
             k = _read_from(p, 32)
             if k:
                 test(k)
-            s = _read_from(p, 160)
+            s = _read_from(p, 256)
             if s:
-                for p2 in ptrs(s):
-                    if 0x10000 <= p2 < 0x7FFFFFFFFFFF:
-                        k2 = _read_from(p2, 32)
-                        if k2:
-                            test(k2)
+                for p2 in _ptrs(s):
+                    k2 = _read_from(p2, 32)
+                    if k2:
+                        test(k2)
     return found, codecs
 
 
@@ -295,6 +372,15 @@ def active_user_dir():
         if m > bt:
             bt, best = m, os.path.dirname(d)
     return best
+
+
+def _account_of(edb_path):
+    """edb 절대경로 -> 소속 계정 폴더(USERS_ROOT/<acct>)."""
+    try:
+        acct = os.path.relpath(edb_path, USERS_ROOT).split(os.sep)[0]
+    except ValueError:
+        return os.path.dirname(os.path.dirname(edb_path))
+    return os.path.join(USERS_ROOT, acct)
 
 
 def _copy_set(edb, dstdir):
@@ -314,27 +400,64 @@ class PCKakao:
             raise RuntimeError("PC 카톡 user dir 없음")
         self.keys = {}        # edb_path(소문자 basename) -> key
         self.tmp = tempfile.mkdtemp(prefix="pckak_det_")
+        self._last_codecs = 0
+        self._pass_dirs = []  # 이번 폴링에서 만든 복호화 임시폴더(끝나면 prune)
 
     # --- 키 추출 ---
     def refresh_keys(self):
+        """카톡 메모리를 스캔해 키를 복구하고, 키가 가장 많이 나온 계정을
+        감시 대상으로 삼는다(= 지금 로그인돼 메모리에 떠 있는 계정).
+        active_user_dir() 의 수정시각 추정보다 신뢰도가 높다."""
         pids = find_pids()
         if not pids:
             raise RuntimeError("KakaoTalk.exe 미실행")
-        edbs = glob.glob(os.path.join(self.user_dir, "**", "*.edb"), recursive=True)
+        # 모든 계정의 edb 로 오라클 구성(어느 계정이 메모리에 있든 맞춰짐)
+        edbs = glob.glob(os.path.join(USERS_ROOT, "*", "chat_data", "**", "*.edb"),
+                         recursive=True)
         pages = []
         for e in edbs:
             try:
-                pages.append((e, open(e, "rb").read(PAGE)))
+                d = open(e, "rb").read(PAGE)
+                if len(d) >= PAGE:
+                    pages.append((e, d))
             except OSError:
                 pass
         regs = []
         for pid in pids:
             regs += read_regions(pid)
         found, codecs = recover_keys(regs, [p for _e, p in pages])
-        self.keys = {}
+        self._last_codecs = len(codecs)
+        by_acct = {}
         for k, idx in found.items():
-            self.keys[os.path.basename(pages[idx][0]).lower()] = k
+            path = pages[idx][0]
+            by_acct.setdefault(_account_of(path), {})[os.path.basename(path).lower()] = k
+        if by_acct:
+            self.user_dir = max(by_acct, key=lambda a: len(by_acct[a]))
+            self.keys = by_acct[self.user_dir]
+        else:
+            self.keys = {}
         return len(self.keys), len(codecs)
+
+    def _keys_valid(self):
+        """캐시된 키가 아직 이 계정 DB 를 여는지 1-AES 로 싸게 확인
+        (카톡 재시작 시 키가 바뀌면 False → 재추출 유도)."""
+        if not self.keys:
+            return False
+        cli = os.path.join(self.user_dir, "chat_data", "chatListInfo.edb")
+        try:
+            fp = open(cli, "rb").read(PAGE)
+        except OSError:
+            return False
+        return any(try_key(fp, k) for k in self.keys.values())
+
+    def ensure_keys(self):
+        """키가 유효하면 메모리 스캔을 건너뛴다(폴링마다 수백 MB 재스캔 방지).
+        무효/없음일 때만 refresh_keys() 로 재추출."""
+        if not find_pids():
+            raise RuntimeError("KakaoTalk.exe 미실행")
+        if self._keys_valid():
+            return len(self.keys), self._last_codecs
+        return self.refresh_keys()
 
     def _decrypt(self, edb):
         key = self.keys.get(os.path.basename(edb).lower())
@@ -348,11 +471,18 @@ class PCKakao:
             if not key:
                 return None
         work = tempfile.mkdtemp(dir=self.tmp)
+        self._pass_dirs.append(work)
         src = _copy_set(edb, work)
         dst = src + ".sqlite"
         if decrypt_edb(src, dst, key):
             return dst
         return None
+
+    def prune(self):
+        """이번 폴링에서 만든 복호화 임시폴더 정리(디스크 누적 방지)."""
+        for d in self._pass_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+        self._pass_dirs = []
 
     # --- 오픈채팅 방 목록 ---
     def open_rooms(self):
@@ -492,7 +622,7 @@ def process_room(chat_id, room, feeds, st):
 
 
 def run_once(pc, st, status=None):
-    nk, nc = pc.refresh_keys()
+    nk, nc = pc.ensure_keys()
     rooms = pc.open_rooms()                 # 전체 오픈챗 {chatId:name}
     watch = load_watch()                    # 감시 대상(비면 전체)
     if status is not None:
@@ -511,6 +641,7 @@ def run_once(pc, st, status=None):
         if feeds:
             process_room(cid, name, feeds, st)
     save_state(st)
+    pc.prune()                              # 이번 폴링 임시폴더 정리
     return rooms
 
 
