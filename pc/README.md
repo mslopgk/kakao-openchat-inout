@@ -3,8 +3,9 @@
 PC용 KakaoTalk(Windows)의 로컬 DB를 복호화해 오픈채팅 들낙을 감지한다.
 **에뮬레이터·Redroid·WSL·adb 전부 불필요** — PC 카톡만 실행돼 있으면 된다.
 
-> 상태: **전체 실동작 검증(2026-10-28, 26.9.0) + 26.9.1.5339 재검증(2026-10-29).**
-> 오픈챗 방 자동 목록화, 들낙 판정, 프로필 바꿔치기(userId) 추적. 단일 `.exe`(PyInstaller).
+> 상태: **v1.1.0** — 전체 실동작 검증(2026-10-28, 26.9.0) + 26.9.1.5339 재검증(2026-10-29~30).
+> 오픈챗 방 자동 목록화, 들낙 판정, 프로필 바꿔치기(userId) 추적, 납품용 대시보드 내장.
+> 단일 `.exe`(PyInstaller).
 
 ## 왜 되는가
 
@@ -32,6 +33,9 @@ PC용 KakaoTalk(Windows)의 로컬 DB를 복호화해 오픈채팅 들낙을 감
 - **`authorId`/`member.userId` 는 방 안에서 안정적** → 오픈프로필/닉 바꿔치기해도 묶인다.
 - 오픈채팅 방 목록·이름은 `chatListInfo.edb`(`chatRoomList.type` 이 `OM`/`OD`) +
   `openLinkListInfo.edb`(`openLinkList.linkName`) 에서 얻는다.
+  - **방 이름 우선순위**: 사용자 지정 제목(`useCustomChatRoomTitle`) > 그룹 오픈챗(OM)은
+    `linkName` > 표시 제목(`chatRoomTitle`). `chatRoomTitle` 은 카톡 표시용 캐시라 멤버 목록을
+    못 불러온 방엔 `대화상대 없음` 같은 대체 문구가 들어 있어 그대로 쓰면 안 된다(26.9.1 실측).
 - **WAL 필수**: 26.9.x 는 메인 `.edb` 가 거의 빈 껍데기고 스키마·행이 전부 암호화된
   `-wal` 에 있다. 그래서 복호화 시 **SQLCipher WAL 프레임을 누적 체크섬·커밋 규칙대로
   리플레이**해 최신 상태를 반영한다(본 DB 만 읽으면 방 0개). 체크섬 검증 덕에 카톡이
@@ -41,21 +45,25 @@ PC용 KakaoTalk(Windows)의 로컬 DB를 복호화해 오픈채팅 들낙을 감
 
 ```
 pc_detector.py   감지 엔진: 메모리 키추출 + SQLCipher4 복호화 + 오픈챗 목록 + 들낙 판정
-app.py           Windows 앱: 감지 스레드 + 로컬 웹서버(Flask) + 네이티브 창(pywebview)
-dashboard.html   대시보드 UI (앱이 서빙)
+app.py           Windows 앱: 감지 스레드 + 로컬 API(Flask, 127.0.0.1:8799) + 네이티브 창(pywebview)
+dashboard.html   대시보드 UI (앱이 서빙, 외부 의존성 없음)
 app.spec         PyInstaller 빌드 스펙 (단일 exe, 창형)
 ```
 
-- 원본 `.edb` 는 **절대 수정하지 않는다**(임시 복사본만 복호화, 종료 시 삭제).
+- 원본 `.edb` 는 **절대 수정하지 않는다**(임시 복사본만 복호화). 복호화 사본은 매 폴링 끝에
+  삭제하고(오류가 나도 삭제), 종료 시 폴더째 삭제, 강제 종료로 남은 것은 다음 실행 때 정리한다.
 - 개인 1:1/일반 대화는 다루지 않고 **오픈채팅 방만** 처리한다.
 
 ## 실행 (개발)
 
 ```bash
-pip install flask cryptography pywebview
+pip install flask cryptography pywebview pyinstaller   # Python 3.13 기준
 python pc_detector.py --once     # 1회 패스: 오픈챗 목록 + 들낙 출력
 python app.py                    # 앱: http://127.0.0.1:8799 (네이티브 창 or 브라우저)
 ```
+
+> 개발·테스트는 **테스트 계정**으로 로그인한 PC 카톡에서 한다(실계정 방 이름·닉네임이 노출될 수 있음).
+> UI 만 확인할 때는 대시보드의 **데모 모드**를 쓴다.
 
 데이터(상태/이벤트/화이트리스트/감시목록)는 `%LOCALAPPDATA%\KakaoInoutDetector\` 에 저장
 (`pc_state.json`, `events.jsonl`, `notes.json`, `watch.json`).
@@ -69,6 +77,10 @@ python app.py                    # 앱: http://127.0.0.1:8799 (네이티브 창 
 - **감시 방 설정**: 오픈챗을 스위치로 선택(비우면 전체). `watch.json` 에 저장.
 - **상태 표시**: 상단 상태(실시간/카톡 꺼짐/로그인 필요/응답 지연/감지 오류/앱 연결 끊김) + 상황별
   배너. 앱 엔진 연결이 끊기면 백오프로 자동 재연결(지금 재시도 버튼). 다크 기본, 라이트 전환.
+- **데모 모드**: 사이드바 스위치(또는 시작 화면 '데모로 둘러보기'). 가상 방 4개·유저 12명으로
+  로그·블랙리스트·알림을 시연한다(6초마다 새 입·퇴장, 판정 규칙은 감지기와 동일). 데이터는
+  브라우저 안에서만 생성해 **서버·기록 파일에 쓰지 않는다**. 켜져 있으면 상단 '데모 모드' 표시 +
+  배너, 앱을 다시 실행하면 항상 꺼진 상태로 시작한다.
 - 화면 상태는 `/api/status` 의 `phase`(starting·kakao_off·no_account·scanning·no_keys·no_rooms·
   live·error)로 결정한다.
 
@@ -86,7 +98,9 @@ pyinstaller app.spec --noconfirm
 ```
 
 클라이언트는 **PC 카톡을 켠 상태**에서 `KakaoInoutDetector.exe` 를 더블클릭하면 끝.
-(파이썬·안드로이드·WSL 불필요. 최초 실행 시 메모리 스캔 수십 초)
+(파이썬·안드로이드·WSL 불필요. 최초 연결 시 메모리 스캔에 수 초~수십 초 — 시작 화면에 진행 표시)
+
+배포 PC 체크리스트: PC 카톡 설치·로그인, WebView2 런타임(없으면 브라우저로 열림), 백신 예외 등록 여부.
 
 ## 한계
 
