@@ -33,9 +33,10 @@
 ## 피드 포맷 (복호화 결과)
 
 ```json
-{"feedType":4,"members":[{"userId":8692748093171013120,"nickName":"이지호"}]}   // 입장 — members 배열
-{"feedType":2,"member":{"userId":8692748093171013120,"nickName":"이지호"}}       // 퇴장 — member 단수 객체 (!)
+{"feedType":4,"members":[{"userId":<userId>,"nickName":"<닉네임>"}]}   // 입장 — members 배열
+{"feedType":2,"member":{"userId":<userId>,"nickName":"<닉네임>"}}       // 퇴장 — member 단수 객체 (!)
 ```
+(userId 는 방별로 발급되는 긴 정수. 공개 저장소라 실제 값은 표기하지 않음.)
 
 | feedType | 의미 |
 |---|---|
@@ -48,7 +49,7 @@
 
 ## userId 성질 (실측)
 - **같은 방 안에서는** 기본 프로필 ↔ 오픈프로필 4종을 바꿔가며 들낙해도 **userId 동일** → 프로필 갈아끼우기로 못 피함.
-- **방이 다르면 userId가 다르다** (같은 본계정: 방1 `8770…4245`, 방2 `8692…3120`). 오픈채팅 userId는 방(링크)별 발급 → 방 간 블랙리스트 공유 불가.
+- **방이 다르면 userId가 다르다** (같은 본계정이라도 방1·방2의 userId가 서로 다름을 실측). 오픈채팅 userId는 방(링크)별 발급 → 방 간 블랙리스트 공유 불가.
 
 ## 판정 규칙 (상수로 조정)
 - `QUICK_LEAVE_SEC = 600` — 입장 후 10분 내 퇴장 → 들낙
